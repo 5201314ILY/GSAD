@@ -1,0 +1,11 @@
+[package]
+name = "gsad-core"
+version.workspace = true
+edition.workspace = true
+description = "Core contracts for the Generalized Stray-Arrow Decoding"
+
+[dependencies]
+zstd = "0.14.0"
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+/target/
+.DS_Store
+*.tmp
+*.partial
+
+.*.gsad-tmp-*
+/.gsad-backup-*/
+/smoke-test/

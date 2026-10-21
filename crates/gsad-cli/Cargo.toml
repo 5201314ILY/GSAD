@@ -1,0 +1,15 @@
+[package]
+name = "gsad-cli"
+version.workspace = true
+edition.workspace = true
+description = "Command-line driver for Generalized Stray-Arrow Decoding"
+
+[[bin]]
+name = "gsad"
+path = "src/main.rs"
+
+[dependencies]
+gsad-core = { path = "../gsad-core" }
+
+[lints]
+workspace = true
