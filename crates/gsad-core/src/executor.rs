@@ -372,6 +372,7 @@ mod tests {
         data: Vec<u8>,
         committed: bool,
         aborted: bool,
+        cancel_on_flush: Option<crate::resource::CancellationToken>,
     }
 
     impl OutputSink for TestSink {
@@ -388,6 +389,9 @@ mod tests {
         }
 
         fn flush(&mut self) -> Result<()> {
+            if let Some(token) = &self.cancel_on_flush {
+                token.cancel();
+            }
             Ok(())
         }
 
@@ -808,5 +812,51 @@ mod tests {
         );
 
         fs::remove_dir(&workspace_parent).unwrap();
+    }
+
+    #[test]
+    fn cancellation_during_final_flush_aborts_before_commit() {
+        let registry = CapabilityRegistry::new();
+
+        register_engine(
+            &registry,
+            "test.cancel-during-flush",
+            DataKind::Bytes,
+            DataKind::Text,
+            DataKind::Text,
+            false,
+        );
+
+        let limits = test_limits();
+        let plan = ExecutionPlan::new(
+            DataKind::Bytes,
+            DataKind::Text,
+            vec![stage(
+                "test.cancel-during-flush",
+                DataKind::Bytes,
+                DataKind::Text,
+            )],
+        )
+        .validate(&registry, &limits)
+        .unwrap();
+
+        let context = ExecutionContext::new(limits).unwrap();
+        let mut sink = TestSink {
+            cancel_on_flush: Some(context.cancellation.clone()),
+            ..TestSink::default()
+        };
+
+        let error = execute_plan(
+            &plan,
+            input(b"written before flush cancellation"),
+            &context,
+            &mut sink,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert!(!sink.committed, "cancelled output must not be committed");
+        assert!(sink.aborted, "cancelled output must be aborted");
+        assert!(sink.data.is_empty(), "aborted output must be cleared");
     }
 }
