@@ -39,14 +39,14 @@ dependencies = [
 
 [[package]]
 name = "gsad-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "gsad-core",
 ]
 
 [[package]]
 name = "gsad-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "zstd",
 ]

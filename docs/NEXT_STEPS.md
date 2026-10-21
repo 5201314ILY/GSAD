@@ -1,9 +1,9 @@
 # GSAD next engineering steps
 
-## Current baseline — v0.5.0
+## Current state — v0.6.0 release candidate
 
-The `v0.5.0` tag is the baseline for the current development branch.
-The `feat/v0.6-task-contract` branch adds task lifecycle contracts,
+The task-contract and multi-stage execution work has been merged into `master`. The workspace packages now target `0.6.0`; the `v0.6.0` release tag has not yet been created.
+The `master` branch now includes the task lifecycle contracts,
 execution-plan validation, a multi-stage executor, and stronger
 `FileSource` snapshot-length boundary behavior.
 
@@ -20,7 +20,7 @@ file mutation remains unsupported.
 
 ## P0 — review and cross-platform verification
 
-- Review the complete branch diff against `v0.5.0`.
+- The feature branch diff has been reviewed against `v0.5.0` and fast-forward merged into `master`.
 - Validate `AtomicFileSink` on Linux and Windows, including existing
   destinations, temporary-file cleanup, hard-link support, and failure paths.
 - Document file-sync and directory-entry durability guarantees and limitations.
@@ -68,8 +68,7 @@ input, bounds, cancellation, resource use, and third-party license obligations.
 
 ## Release discipline
 
-- Keep `v0.5.0` as the existing baseline tag.
-- Review and validate the complete `feat/v0.6-task-contract` branch before
-  merging it.
+- Retain `v0.5.0` as the historical baseline tag.
+- Create the `v0.6.0` tag only after final release checks and release notes are complete.
 - Create a new release tag only after the branch is reviewed, integrated,
   and its release-specific validation is complete.
