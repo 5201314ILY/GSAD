@@ -18,7 +18,7 @@ dedicated lifecycle and publication tests.
 Local validation on the current Windows development environment has passed:
 
 - `cargo fmt --all -- --check`
-- `cargo test --workspace` — 59 tests passed
+- `cargo test --workspace` — 60 tests passed
 - `cargo clippy --workspace --all-targets -- -D warnings`
 
 Run the full validation suite before integrating this branch. Verify the
@@ -26,12 +26,13 @@ branch in Linux and Windows CI after pushing it. These hardening changes
 have not yet been integrated into `master`.
 ## P0 — review and cross-platform verification
 
-- The v0.6 task-contract and executor feature branch was reviewed against `v0.5.0` and fast-forward merged into `master`.
-- Validate `AtomicFileSink` on Linux and Windows, including existing
-  destinations, temporary-file cleanup, hard-link support, and failure paths.
-- Document file-sync and directory-entry durability guarantees and limitations.
-- Keep the no-overwrite publication behavior.
-- Run formatting, workspace tests, and Clippy in CI on supported platforms.
+- Linux and Windows CI passed for formatting, workspace tests, and Clippy.
+- Add targeted tests for filesystem-specific failures that are not yet
+  directly simulated, including unsupported hard-link publication and
+  persistent temporary-file cleanup failures.
+- Review file-sync and directory-entry durability documentation against
+  the implementation. Directory-entry durability after sudden power loss
+  remains an explicit limitation.
 
 ## P1 — remaining execution-contract hardening
 

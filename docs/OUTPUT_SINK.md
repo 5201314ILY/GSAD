@@ -57,4 +57,4 @@
 
 ## 验收测试
 
-`tests/output_contracts.rs` 覆盖：短写成功、字节上限、引擎中途失败、输出类型声明错误、刷新失败和提交失败。`tests/end_to_end.rs` 增加文件压缩/解压往返、目标不覆盖、格式错误和输出上限失败场景。当前 Windows 开发环境中的 `cargo test --workspace` 已通过，共 59 项测试通过。跨平台验证仍需在 Linux 和 Windows CI 中完成。
+`tests/output_contracts.rs` 覆盖：短写成功、字节上限、引擎中途失败、输出类型声明错误、刷新失败和提交失败。`tests/end_to_end.rs` 增加文件压缩/解压往返、目标不覆盖、格式错误和输出上限失败场景。当前 Windows 开发环境中的 `cargo test --workspace` 已通过，共 60 项测试通过。跨平台验证仍需在 Linux 和 Windows CI 中完成。
