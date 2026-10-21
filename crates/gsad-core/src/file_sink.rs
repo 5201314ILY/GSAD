@@ -28,6 +28,7 @@ pub struct AtomicFileSink {
     file: Option<File>,
     committed: bool,
     aborted: bool,
+    temporary_cleanup_pending: bool,
 }
 
 impl AtomicFileSink {
@@ -74,6 +75,7 @@ impl AtomicFileSink {
                         file: Some(file),
                         committed: false,
                         aborted: false,
+                        temporary_cleanup_pending: true,
                     });
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -93,6 +95,36 @@ impl AtomicFileSink {
 
     pub fn temporary_path(&self) -> &Path {
         &self.temporary
+    }
+
+    fn cleanup_after_commit_failure(
+        &mut self,
+        mut primary: GsadError,
+        remove_temporary: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> GsadError {
+        drop(self.file.take());
+        self.aborted = true;
+
+        match remove_temporary(&self.temporary) {
+            Ok(()) => {
+                self.temporary_cleanup_pending = false;
+                primary
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.temporary_cleanup_pending = false;
+                primary
+            }
+            Err(cleanup_error) => {
+                self.temporary_cleanup_pending = true;
+                primary.message = format!(
+                    "{}; additionally failed to remove temporary output {}: {}",
+                    primary.message,
+                    self.temporary.display(),
+                    cleanup_error
+                );
+                primary
+            }
+        }
     }
 }
 
@@ -133,55 +165,95 @@ impl OutputSink for AtomicFileSink {
             ));
         }
 
-        let file = self
-            .file
-            .as_mut()
-            .ok_or_else(|| GsadError::internal("file sink has no open temporary file"))?;
-        file.flush().map_err(GsadError::from)?;
-        file.sync_all().map_err(GsadError::from)?;
-        drop(self.file.take());
+        let result = (|| {
+            let file = self
+                .file
+                .as_mut()
+                .ok_or_else(|| GsadError::internal("file sink has no open temporary file"))?;
 
-        match fs::hard_link(&self.temporary, &self.destination) {
-            Ok(()) => {
-                // The final path now points at the completed file. Mark it
-                // committed before best-effort temp-name cleanup so a cleanup
-                // failure can never be misreported as a rolled-back output.
-                self.committed = true;
-                let _ = fs::remove_file(&self.temporary);
-                Ok(())
+            file.flush()
+                .map_err(|error| GsadError::from(error).during("file_sink.commit"))?;
+            file.sync_all()
+                .map_err(|error| GsadError::from(error).during("file_sink.commit"))?;
+
+            drop(self.file.take());
+
+            match fs::hard_link(&self.temporary, &self.destination) {
+                Ok(()) => {
+                    // Publishing succeeded. Never report this as rolled back
+                    // merely because removing the temporary name later fails.
+                    self.committed = true;
+
+                    match fs::remove_file(&self.temporary) {
+                        Ok(()) => self.temporary_cleanup_pending = false,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            self.temporary_cleanup_pending = false;
+                        }
+                        Err(_) => {
+                            // Publication succeeded; Drop can retry temporary-name cleanup.
+                            self.temporary_cleanup_pending = true;
+                        }
+                    }
+
+                    Ok(())
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(GsadError::new(
+                        ErrorKind::Conflict,
+                        format!(
+                            "destination already exists and was not replaced: {}",
+                            self.destination.display()
+                        ),
+                    )
+                    .during("file_sink.commit"))
+                }
+                Err(error) => Err(GsadError::new(
+                    ErrorKind::Io,
+                    format!("failed to publish output atomically: {error}"),
+                )
+                .during("file_sink.commit")),
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(GsadError::new(
-                ErrorKind::Conflict,
-                format!(
-                    "destination already exists and was not replaced: {}",
-                    self.destination.display()
-                ),
-            )),
-            Err(error) => Err(GsadError::new(
-                ErrorKind::Io,
-                format!("failed to publish output atomically: {error}"),
-            )
-            .during("file_sink.commit")),
+        })();
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(primary) => {
+                Err(self.cleanup_after_commit_failure(primary, |path| fs::remove_file(path)))
+            }
         }
     }
 
     fn abort(&mut self) -> Result<()> {
-        if self.committed {
+        if self.committed && !self.temporary_cleanup_pending {
             return Ok(());
         }
+
         drop(self.file.take());
-        self.aborted = true;
+
+        if !self.committed {
+            self.aborted = true;
+        }
+
         match fs::remove_file(&self.temporary) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(GsadError::new(
-                ErrorKind::Io,
-                format!(
-                    "failed to remove temporary output {}: {error}",
-                    self.temporary.display()
-                ),
-            )
-            .during("file_sink.abort")),
+            Ok(()) => {
+                self.temporary_cleanup_pending = false;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.temporary_cleanup_pending = false;
+                Ok(())
+            }
+            Err(error) => {
+                self.temporary_cleanup_pending = true;
+                Err(GsadError::new(
+                    ErrorKind::Io,
+                    format!(
+                        "failed to remove temporary output {}: {error}",
+                        self.temporary.display()
+                    ),
+                )
+                .during("file_sink.abort"))
+            }
         }
     }
 
@@ -192,9 +264,66 @@ impl OutputSink for AtomicFileSink {
 
 impl Drop for AtomicFileSink {
     fn drop(&mut self) {
-        if !self.committed {
-            drop(self.file.take());
+        drop(self.file.take());
+
+        if self.temporary_cleanup_pending {
             let _ = fs::remove_file(&self.temporary);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_cleanup_preserves_primary_error_and_drop_retries() {
+        let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "gsad-file-sink-cleanup-retry-{}-{serial}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).expect("create test directory");
+
+        let destination = dir.join("output.bin");
+        let mut sink = AtomicFileSink::new(&destination).expect("create sink");
+        let temporary = sink.temporary_path().to_path_buf();
+
+        let error = sink.cleanup_after_commit_failure(
+            GsadError::new(ErrorKind::Conflict, "injected primary commit failure"),
+            |_path| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected cleanup failure",
+                ))
+            },
+        );
+
+        // The original error remains the primary error.
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(error.message.contains("injected primary commit failure"));
+
+        // Cleanup failure details and the temporary path are preserved.
+        assert!(error.message.contains("injected cleanup failure"));
+        assert!(error.message.contains(&temporary.display().to_string()));
+
+        // The sink is finalized, but cleanup remains pending.
+        assert!(sink.aborted);
+        assert!(sink.temporary_cleanup_pending);
+        assert!(temporary.exists());
+
+        // Drop retries the real filesystem deletion.
+        drop(sink);
+
+        assert!(
+            !temporary.exists(),
+            "Drop should retry temporary-file cleanup"
+        );
+        assert!(
+            !destination.exists(),
+            "failed commit must not publish output"
+        );
+
+        fs::remove_dir_all(&dir).expect("remove test directory");
     }
 }

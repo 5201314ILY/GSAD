@@ -1,4 +1,4 @@
-# GSAD core architecture notes — v0.6 development
+# GSAD core architecture notes — v0.6
 
 ## Core principle
 
@@ -60,8 +60,8 @@ algorithms or internal representations of unrelated data domains.
 
 ## Extension sequence
 
-1. Review the task-contract and multi-stage executor diff and keep formatting,
-   workspace tests, and Clippy as required gates.
+1. Keep formatting, workspace tests, and Clippy as required validation
+   gates for all changes.
 2. Validate atomic file output, file mutation behavior, and cleanup on Linux
    and Windows.
 3. Improve structured execution observability and continue hardening plan,
