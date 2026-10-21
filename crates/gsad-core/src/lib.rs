@@ -27,5 +27,5 @@ pub use registry::CapabilityRegistry;
 pub use resource::{CancellationToken, ResourceLimits};
 pub use rle::RleEngine;
 pub use source::{DataSource, FileSource, SourceInfo, SourceReader, SourceSupport};
-pub use task::TaskState;
+pub use task::{TaskId, TaskLifecycle, TaskState, TaskTransition};
 pub use zstd_codec::ZstdEngine;
