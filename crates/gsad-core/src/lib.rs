@@ -8,6 +8,7 @@ pub mod engine;
 pub mod error;
 pub mod file_sink;
 pub mod output;
+pub mod plan;
 pub mod registry;
 pub mod resource;
 pub mod rle;
@@ -23,6 +24,7 @@ pub use engine::{
 pub use error::{ErrorKind, GsadError, Result};
 pub use file_sink::AtomicFileSink;
 pub use output::{execute_to_sink, BoundedOutputWriter, CommitSemantics, OutputSink, OutputWriter};
+pub use plan::{ExecutionPlan, PlanStage, ValidatedExecutionPlan, ValidatedPlanStage};
 pub use registry::CapabilityRegistry;
 pub use resource::{CancellationToken, ResourceLimits};
 pub use rle::RleEngine;
