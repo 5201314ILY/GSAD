@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -62,7 +62,17 @@ pub fn execute_plan(
     context: &ExecutionContext,
     final_sink: &mut dyn OutputSink,
 ) -> Result<PlanExecutionReport> {
-    let result = execute_plan_inner(plan, input, context, final_sink);
+    execute_plan_with_workspace_parent(plan, input, context, final_sink, None)
+}
+
+fn execute_plan_with_workspace_parent(
+    plan: &ValidatedExecutionPlan,
+    input: Arc<dyn DataSource>,
+    context: &ExecutionContext,
+    final_sink: &mut dyn OutputSink,
+    workspace_parent: Option<&Path>,
+) -> Result<PlanExecutionReport> {
+    let result = execute_plan_inner(plan, input, context, workspace_parent, final_sink);
 
     match result {
         Ok(report) => Ok(report),
@@ -81,6 +91,7 @@ fn execute_plan_inner(
     plan: &ValidatedExecutionPlan,
     input: Arc<dyn DataSource>,
     context: &ExecutionContext,
+    workspace_parent: Option<&Path>,
     final_sink: &mut dyn OutputSink,
 ) -> Result<PlanExecutionReport> {
     context.limits.validate()?;
@@ -94,7 +105,10 @@ fn execute_plan_inner(
     }
 
     let workspace = if stages.len() > 1 {
-        Some(TemporaryWorkspace::new()?)
+        Some(match workspace_parent {
+            Some(parent) => TemporaryWorkspace::new_in(parent)?,
+            None => TemporaryWorkspace::new()?,
+        })
     } else {
         None
     };
@@ -235,7 +249,11 @@ struct TemporaryWorkspace {
 
 impl TemporaryWorkspace {
     fn new() -> Result<Self> {
-        let base = std::env::temp_dir();
+        Self::new_in(std::env::temp_dir())
+    }
+
+    fn new_in(base: impl AsRef<Path>) -> Result<Self> {
+        let base = base.as_ref();
 
         for _ in 0..128 {
             let serial = WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -276,11 +294,14 @@ mod tests {
         registry::CapabilityRegistry,
         source::MemorySource,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestEngine {
         descriptor: CapabilityDescriptor,
         actual_output_kind: DataKind,
         fail: bool,
+        calls: Arc<AtomicUsize>,
+        cancel_on_execute: bool,
     }
 
     impl ProcessingEngine for TestEngine {
@@ -293,11 +314,17 @@ mod tests {
             request: &EngineRequest,
             context: &ExecutionContext,
         ) -> Result<EngineOutput> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+
             if self.fail {
                 return Err(GsadError::new(
                     ErrorKind::CorruptData,
                     "intentional test engine failure",
                 ));
+            }
+
+            if self.cancel_on_execute {
+                context.cancellation.cancel();
             }
 
             let mut reader = request.input.open_reader()?;
@@ -402,11 +429,51 @@ mod tests {
         planned_output_kind: DataKind,
         actual_output_kind: DataKind,
         fail: bool,
-    ) {
+    ) -> Arc<AtomicUsize> {
+        register_engine_with_options(
+            registry,
+            id,
+            input_kind,
+            planned_output_kind,
+            actual_output_kind,
+            fail,
+            false,
+        )
+    }
+
+    fn register_cancelling_engine(
+        registry: &CapabilityRegistry,
+        id: &str,
+        input_kind: DataKind,
+        planned_output_kind: DataKind,
+        actual_output_kind: DataKind,
+    ) -> Arc<AtomicUsize> {
+        register_engine_with_options(
+            registry,
+            id,
+            input_kind,
+            planned_output_kind,
+            actual_output_kind,
+            false,
+            true,
+        )
+    }
+
+    fn register_engine_with_options(
+        registry: &CapabilityRegistry,
+        id: &str,
+        input_kind: DataKind,
+        planned_output_kind: DataKind,
+        actual_output_kind: DataKind,
+        fail: bool,
+        cancel_on_execute: bool,
+    ) -> Arc<AtomicUsize> {
         let mut outputs = vec![planned_output_kind];
         if !outputs.contains(&actual_output_kind) {
             outputs.push(actual_output_kind);
         }
+
+        let calls = Arc::new(AtomicUsize::new(0));
 
         let engine = TestEngine {
             descriptor: CapabilityDescriptor {
@@ -423,9 +490,12 @@ mod tests {
             },
             actual_output_kind,
             fail,
+            calls: Arc::clone(&calls),
+            cancel_on_execute,
         };
 
         registry.register(Arc::new(engine)).unwrap();
+        calls
     }
 
     fn stage(id: &str, input: DataKind, output: DataKind) -> PlanStage {
@@ -598,5 +668,145 @@ mod tests {
         assert!(!sink.committed);
         assert!(sink.aborted);
         assert!(sink.data.is_empty());
+    }
+
+    fn unique_test_parent() -> PathBuf {
+        for _ in 0..128 {
+            let serial = super::WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let directory = std::env::temp_dir().join(format!(
+                "gsad-executor-test-{}-{serial}",
+                std::process::id(),
+            ));
+
+            match fs::create_dir(&directory) {
+                Ok(()) => return directory,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("failed to create test directory: {error}"),
+            }
+        }
+
+        panic!("could not create a unique executor test directory");
+    }
+
+    #[test]
+    fn cancellation_stops_later_stages_and_cleans_workspace() {
+        let registry = CapabilityRegistry::new();
+
+        let first_calls = register_cancelling_engine(
+            &registry,
+            "test.cancel-first",
+            DataKind::Bytes,
+            DataKind::Text,
+            DataKind::Text,
+        );
+
+        let second_calls = register_engine(
+            &registry,
+            "test.must-not-run",
+            DataKind::Text,
+            DataKind::Bytes,
+            DataKind::Bytes,
+            false,
+        );
+
+        let limits = test_limits();
+        let plan = ExecutionPlan::new(
+            DataKind::Bytes,
+            DataKind::Bytes,
+            vec![
+                stage("test.cancel-first", DataKind::Bytes, DataKind::Text),
+                stage("test.must-not-run", DataKind::Text, DataKind::Bytes),
+            ],
+        )
+        .validate(&registry, &limits)
+        .unwrap();
+
+        let context = ExecutionContext::new(limits).unwrap();
+        let mut sink = TestSink::default();
+        let workspace_parent = unique_test_parent();
+
+        let error = execute_plan_with_workspace_parent(
+            &plan,
+            input(b"cancel me"),
+            &context,
+            &mut sink,
+            Some(&workspace_parent),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::Cancelled);
+        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        assert!(!sink.committed);
+        assert!(sink.aborted);
+        assert!(sink.data.is_empty());
+
+        assert!(
+            fs::read_dir(&workspace_parent).unwrap().next().is_none(),
+            "temporary plan workspace should be removed after cancellation",
+        );
+
+        fs::remove_dir(&workspace_parent).unwrap();
+    }
+
+    #[test]
+    fn later_stage_failure_removes_committed_intermediate_file() {
+        let registry = CapabilityRegistry::new();
+
+        register_engine(
+            &registry,
+            "test.first-stage",
+            DataKind::Bytes,
+            DataKind::Text,
+            DataKind::Text,
+            false,
+        );
+
+        let failing_calls = register_engine(
+            &registry,
+            "test.second-stage-fails",
+            DataKind::Text,
+            DataKind::Bytes,
+            DataKind::Bytes,
+            true,
+        );
+
+        let limits = test_limits();
+        let plan = ExecutionPlan::new(
+            DataKind::Bytes,
+            DataKind::Bytes,
+            vec![
+                stage("test.first-stage", DataKind::Bytes, DataKind::Text),
+                stage("test.second-stage-fails", DataKind::Text, DataKind::Bytes),
+            ],
+        )
+        .validate(&registry, &limits)
+        .unwrap();
+
+        let context = ExecutionContext::new(limits).unwrap();
+        let mut sink = TestSink::default();
+        let workspace_parent = unique_test_parent();
+
+        let error = execute_plan_with_workspace_parent(
+            &plan,
+            input(b"intermediate data"),
+            &context,
+            &mut sink,
+            Some(&workspace_parent),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, ErrorKind::CorruptData);
+        assert_eq!(failing_calls.load(Ordering::SeqCst), 1);
+        assert!(!sink.committed);
+        assert!(sink.aborted);
+        assert!(sink.data.is_empty());
+
+        assert!(
+            fs::read_dir(&workspace_parent).unwrap().next().is_none(),
+            "intermediate workspace should be removed after a later stage fails",
+        );
+
+        fs::remove_dir(&workspace_parent).unwrap();
     }
 }
