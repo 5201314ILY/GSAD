@@ -1,26 +1,32 @@
 # GSAD next engineering steps
 
-## Current state — v0.6.0 release candidate
+## Current state — v0.6.0 released
 
-The task-contract and multi-stage execution work has been merged into `master`. The workspace packages now target `0.6.0`; the `v0.6.0` release tag has not yet been created.
-The `master` branch now includes the task lifecycle contracts,
-execution-plan validation, a multi-stage executor, and stronger
-`FileSource` snapshot-length boundary behavior.
+GSAD v0.6.0 has been published on GitHub. The workspace packages target
+`0.6.0`; keep the `v0.6.0` tag and release as immutable historical
+artifacts.
 
-Local validation on the development branch has passed:
+The release includes task lifecycle contracts, execution-plan validation,
+the multi-stage executor, and stronger `FileSource` snapshot-length
+boundary behavior. This length boundary is not a content snapshot:
+concurrent file mutation remains unsupported.
+
+The current hardening work is on `feat/atomic-sink-hardening`, based on
+`v0.6.0`. It strengthens `AtomicFileSink` commit-failure cleanup and adds
+dedicated lifecycle and publication tests.
+
+Local validation on the current Windows development environment has passed:
 
 - `cargo fmt --all -- --check`
-- `cargo test --workspace` — 54 tests passed
+- `cargo test --workspace` — 59 tests passed
 - `cargo clippy --workspace --all-targets -- -D warnings`
 
-These results describe the tested local workspace. Run the same gates
-in CI and on supported operating systems before declaring a release.
-The `FileSource` length boundary is not a content snapshot: concurrent
-file mutation remains unsupported.
-
+Run the full validation suite before integrating this branch. Verify the
+branch in Linux and Windows CI after pushing it. These hardening changes
+have not yet been integrated into `master`.
 ## P0 — review and cross-platform verification
 
-- The feature branch diff has been reviewed against `v0.5.0` and fast-forward merged into `master`.
+- The v0.6 task-contract and executor feature branch was reviewed against `v0.5.0` and fast-forward merged into `master`.
 - Validate `AtomicFileSink` on Linux and Windows, including existing
   destinations, temporary-file cleanup, hard-link support, and failure paths.
 - Document file-sync and directory-entry durability guarantees and limitations.
@@ -69,6 +75,5 @@ input, bounds, cancellation, resource use, and third-party license obligations.
 ## Release discipline
 
 - Retain `v0.5.0` as the historical baseline tag.
-- Create the `v0.6.0` tag only after final release checks and release notes are complete.
-- Create a new release tag only after the branch is reviewed, integrated,
-  and its release-specific validation is complete.
+- The `v0.6.0` tag and GitHub Release are already published; do not retarget or recreate them.
+- Create a future release tag only after the relevant branch is reviewed, integrated, and its release-specific validation and notes are complete.
