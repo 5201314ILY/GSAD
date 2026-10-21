@@ -5,6 +5,7 @@
 //! commit a completed output or abort it after failure/cancellation.
 
 use crate::{
+    capability::DataKind,
     engine::{EngineRequest, ExecutionContext, ExecutionReport, ProcessingEngine},
     error::{ErrorKind, GsadError, Result},
 };
@@ -154,7 +155,31 @@ pub fn execute_to_sink(
     context: &ExecutionContext,
     sink: &mut dyn OutputSink,
 ) -> Result<ExecutionReport> {
-    let result = execute_to_sink_inner(engine, request, context, sink);
+    execute_to_sink_with_expected(engine, request, context, sink, None)
+}
+
+/// Executes an engine while requiring its actual output kind to match the plan.
+///
+/// The kind is checked before the sink is flushed or committed.
+pub(crate) fn execute_to_sink_expected(
+    engine: &dyn ProcessingEngine,
+    request: &EngineRequest,
+    context: &ExecutionContext,
+    sink: &mut dyn OutputSink,
+    expected_output_kind: DataKind,
+) -> Result<ExecutionReport> {
+    execute_to_sink_with_expected(engine, request, context, sink, Some(expected_output_kind))
+}
+
+fn execute_to_sink_with_expected(
+    engine: &dyn ProcessingEngine,
+    request: &EngineRequest,
+    context: &ExecutionContext,
+    sink: &mut dyn OutputSink,
+    expected_output_kind: Option<DataKind>,
+) -> Result<ExecutionReport> {
+    let result = execute_to_sink_inner(engine, request, context, sink, expected_output_kind);
+
     match result {
         Ok(report) => Ok(report),
         Err(primary) => match sink.abort() {
@@ -173,6 +198,7 @@ fn execute_to_sink_inner(
     request: &EngineRequest,
     context: &ExecutionContext,
     sink: &mut dyn OutputSink,
+    expected_output_kind: Option<DataKind>,
 ) -> Result<ExecutionReport> {
     context.check_cancelled()?;
     let descriptor = engine.descriptor();
@@ -205,6 +231,18 @@ fn execute_to_sink_inner(
         ));
     }
 
+    if let Some(expected_kind) = expected_output_kind {
+        if completion.data_kind != expected_kind {
+            return Err(GsadError::new(
+                ErrorKind::Internal,
+                format!(
+                    "engine {} reported output kind {}, but the plan stage requires {}",
+                    descriptor.id, completion.data_kind, expected_kind,
+                ),
+            )
+            .during("plan.output_kind"));
+        }
+    }
     sink.flush().map_err(|error| {
         GsadError::new(error.kind, format!("output flush failed: {error}")).during("output.flush")
     })?;

@@ -6,6 +6,7 @@
 pub mod capability;
 pub mod engine;
 pub mod error;
+pub mod executor;
 pub mod file_sink;
 pub mod output;
 pub mod plan;
@@ -22,6 +23,7 @@ pub use engine::{
     ProcessingEngine,
 };
 pub use error::{ErrorKind, GsadError, Result};
+pub use executor::{execute_plan, PlanExecutionReport, StageExecutionSummary};
 pub use file_sink::AtomicFileSink;
 pub use output::{execute_to_sink, BoundedOutputWriter, CommitSemantics, OutputSink, OutputWriter};
 pub use plan::{ExecutionPlan, PlanStage, ValidatedExecutionPlan, ValidatedPlanStage};
